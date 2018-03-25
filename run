@@ -1,0 +1,4 @@
+g++ -c -std=c++0x udp_helper.cpp -I. -lpthread
+g++ -c -std=c++0x decoder.cpp -I.
+g++ -o server -std=c++11 server.cpp -lpthread udp_helper.o decoder.o -lpthread
+rm -rf *.o

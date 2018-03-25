@@ -1,0 +1,151 @@
+#include <thread>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <cstdio>
+#include <cstring>
+#include <iostream>
+#include <unistd.h>
+//random number
+#include <ctime>
+#include <cstdlib>
+
+#include "udp_helper.h"
+
+
+//offset: passing the previous offset, the offset will change to a newone
+int Decoder::decodeInt(char *s, int &offset) {
+    //s[offset] : lowest 8 digits
+    int res = 0;
+    for (int i = 0; i < 4; i++) {
+        res = res | ((s[i + offset] & 0xff)<< (8 * i));
+    }
+    return res;
+}
+
+//mode = 0, normal string
+//mode = 1, encoded string
+int Decoder::GetMessageLength(char *s, int mode) { 
+    //decode int at offset 0
+    int offset = 0;
+    switch (mode) {
+        case NORMAL_STRING:
+            return strlen(s);
+        case ENCODED_STRING:
+            return decodeInt(s, offset);
+        default:
+            //perror("Wrong string format passed to Decoder.");
+            return -1;
+    }
+}
+
+//send udp information via addr, port with a message
+//timeout_mode
+int UdpHelper::send(int local_port, char *remote_addr, int remote_port, char *message, int message_mode, int max_secs, int timeout_mode) {
+    //create socket
+    int fd;
+    if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("failed create");
+        return -1;
+    }
+
+    //bind the socket to (addr: port)
+    struct sockaddr_in myaddr, servaddr;
+
+    memset((void *)&myaddr, 0, sizeof(myaddr)); 
+    myaddr.sin_family = AF_INET;
+    myaddr.sin_port = htons(local_port);
+    myaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    memset((void *)&servaddr, 0, sizeof(servaddr)); 
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_port = htons(remote_port);
+    inet_pton(servaddr.sin_family, remote_addr, &servaddr.sin_addr.s_addr);
+
+    if (bind(fd, (struct sockaddr *)&myaddr, sizeof(myaddr)) < 0) {
+        perror("failed bind");
+        return -1;
+    }
+    std::cout << "Open socket " << fd << std::endl;
+    std::cout << "Connect to addr: " << inet_ntoa(myaddr.sin_addr) << std::endl;
+    std::cout << "Bind to port: " << ntohs(myaddr.sin_port) << std::endl;
+    std::cout << "Send to addr: " << inet_ntoa(servaddr.sin_addr) << std::endl;
+    std::cout << "Send to port: " << ntohs(servaddr.sin_port) << std::endl;
+
+    //set time out
+    if (max_secs > 0) {
+        struct timeval tv;
+        int usec_total = 1000000;
+        int random_usec = 0;
+        switch (timeout_mode) {
+            case TIMEOUT_FIXED:
+                std::cout <<"Choose fixed" << std::endl; 
+                tv.tv_sec = max_secs;
+                tv.tv_usec = 0;
+                break;
+            case TIMEOUT_RANDOM:
+                srand(time(NULL));
+                random_usec = rand() % (max_secs * usec_total);
+                tv.tv_sec = random_usec / usec_total; 
+                tv.tv_usec = random_usec % usec_total;
+                break;
+            default:
+                perror("wront time mode");
+                break;
+        }
+        std::cout << "Time: " << tv.tv_sec << ":" << tv.tv_usec << std::endl;
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0) {
+            perror("set timeout failes");
+        }
+    }
+
+    //send udp message 
+    if (sendto(fd, message, Decoder::GetMessageLength(message, message_mode), 0, (struct sockaddr *)&servaddr, sizeof(servaddr)) < 0) {
+        perror("send message fails");
+        return -1;
+    }
+
+    std::cout << "Successfully send the message to (" << inet_ntoa(servaddr.sin_addr) << ":" << ntohs(servaddr.sin_port) << ")" << std::endl; 
+    close(fd);
+    return 0;
+}
+
+int UdpHelper::receive(int local_port, char *message, int &fd, bool &fd_change, int message_mode) {
+    struct sockaddr_in myaddr, remaddr;
+    socklen_t remote_len = sizeof(remaddr);
+    char *buf = new char[BUF_SIZE];
+    if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+        perror("failed to create socket in receiver.");
+        return -1;
+    }
+    
+    memset((void *)&myaddr, 0, sizeof(myaddr));
+    myaddr.sin_family = AF_INET;
+    myaddr.sin_port = htons(local_port);
+    myaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    if (bind(fd, (struct sockaddr *)&myaddr, sizeof(myaddr)) < 0) {
+        perror("failed to bind a socket in receiver.");
+        return -1;
+    }
+    fd_change = true;
+    std::cout << "Set fd_change into true in helper" << std::endl;
+    while (1) {
+        std::cout << "Listening..." << std::endl;
+        int recvlen = recvfrom(fd, buf, BUF_SIZE, 0, (struct sockaddr *)&remaddr, &remote_len);
+        if (recvlen > 0) {
+            switch (message_mode) {
+                case NORMAL_STRING:
+                    buf[recvlen] = 0;
+                    std::cout << "Receive: " << buf << std::endl;
+                    break;
+                case ENCODED_STRING:
+                    std::cout << "Needs to decode" << std::endl;
+                    break;
+                default:
+                    perror("string format error");
+                    break;
+            }
+        }
+    }
+}
